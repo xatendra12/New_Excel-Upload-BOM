@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Excel Header Mapper</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+body{margin:0;padding:20px;font-family:"Segoe UI",Arial,sans-serif;min-height:100vh;
+background:linear-gradient(rgba(10,20,40,.85),rgba(10,20,40,.85)),url("https://media3.giphy.com/media/pOEbLRT4SwD35IELiQ/giphy.gif");background-size:cover;}
+.container{max-width:1150px;margin:auto;background:rgba(255,255,255,.97);padding:25px;border-radius:18px;box-shadow:0 20px 50px rgba(0,0,0,.35);}
+h2{margin-top:0;color:#1c2b4a;}
+.drop-zone{border:2px dashed #4a7cff;padding:26px;border-radius:16px;text-align:center;color:#4a7cff;transition:.25s;}
+.drop-zone.dragover{background:#eef3ff;border-color:#3459e6;}
+input{padding:10px;width:320px;border-radius:10px;border:1px solid #ccd3e0;margin-top:10px;}
+button{padding:11px 22px;margin-top:14px;margin-right:6px;border:none;border-radius:10px;background:linear-gradient(135deg,#4a7cff,#3459e6);color:#fff;font-size:14px;cursor:pointer;}
+button.reset{background:linear-gradient(135deg,#e55353,#c93636);}
+button:disabled{background:#a6b1d6;cursor:not-allowed;}
+.preview{margin-top:25px;border:1px solid #ddd;border-radius:14px;max-height:420px;overflow:auto;}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid #e0e6ef;padding:8px;font-size:13px;}
+th{background:#f1f4fb;position:sticky;top:0;font-weight:600;}
+tr:hover td{background:#f8faff;}
+#modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(6px);z-index:999;}
+#modalContent{background:#fff;width:90%;max-width:950px;margin:4% auto;border-radius:18px;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,.35);}
+.map-header{padding:18px 22px;background:linear-gradient(135deg,#4a7cff,#3459e6);color:#fff;display:flex;justify-content:space-between;align-items:center;}
+.map-header h3{margin:0;font-size:18px;}
+.map-header span{font-size:13px;opacity:.9;}
+.map-close{font-size:22px;cursor:pointer;}
+.map-body{padding:22px;max-height:420px;overflow:auto;}
+.map-row{display:grid;grid-template-columns:220px 1fr;gap:14px;align-items:center;margin-bottom:12px;}
+.map-row label{font-weight:600;color:#2b3b55;}
+.map-row select{padding:9px 10px;border-radius:10px;border:1px solid #cfd6e0;font-size:14px;}
+.map-footer{padding:15px 22px;display:flex;justify-content:flex-end;gap:10px;background:#f4f6fb;border-top:1px solid #e1e6f0;}
+.map-footer .primary{background:linear-gradient(135deg,#4a7cff,#3459e6);}
+.map-footer .secondary{background:#e55353;}
+.toast-container{position:fixed;top:20px;right:20px;z-index:1000;}
+.toast{padding:12px 22px;margin-bottom:10px;color:#fff;border-radius:10px;min-width:200px;box-shadow:0 5px 12px rgba(0,0,0,.2);opacity:0.95;font-weight:600;}
+.toast.success{background:#4CAF50;}
+.toast.error{background:#e55353;}
+.toast.warning{background:#ff9800;}
+</style>
+</head>
+<body>
+<div class="container">
+<h2>Excel Upload & Header Mapping Tool</h2>
+
+<div class="drop-zone" id="dropZone">
+  <strong>Drag & Drop Excel File Here</strong><br>
+  <small>or use browse option</small>
+</div><br>
+
+<input type="file" id="fileInput" accept=".xlsx,.xls"><br>
+<input type="text" id="partInput" placeholder="Enter PART_NUMBER"><br>
+
+<button id="previewBtn" disabled>Preview</button>
+<button id="downloadBtn" disabled>Download</button>
+<button class="reset" id="resetBtn">Reset</button>
+
+<div class="preview">
+  <table id="previewTable"></table>
+</div>
+</div>
+
+<!-- Mapping Modal -->
+<div id="modal">
+  <div id="modalContent">
+    <div class="map-header">
+      <div>
+        <h3>Map Uploaded Headers</h3>
+        <span>Match Excel columns with standard fields</span>
+      </div>
+      <div class="map-close" id="closeModal">✕</div>
+    </div>
+    <div class="map-body">
+      <form id="mapForm"></form>
+    </div>
+    <div class="map-footer">
+      <button type="button" class="secondary" id="cancelMap">Cancel</button>
+      <button class="primary" id="confirmMap">Confirm Mapping</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+const standardHeaders=[
+ 'S.No','VVDN EN','PART_NUMBER','Description','MFR',
+ 'MPN','Qty/Board','Ref','Stage','Item_number','Work_order'
+];
+
+const hiddenMappingFields=['S.No','PART_NUMBER','MPN','Stage','Item_number','Work_order'];
+const requiredFields=['VVDN EN','Description','MFR','Ref'];
+
+let rawData=[],fileHeaders=[],headerMap={},outputData=[];
+let mappingConfirmed=false;
+
+const fileInput=document.getElementById('fileInput');
+const partInput=document.getElementById('partInput');
+const previewBtn=document.getElementById('previewBtn');
+const downloadBtn=document.getElementById('downloadBtn');
+const resetBtn=document.getElementById('resetBtn');
+const previewTable=document.getElementById('previewTable');
+const modal=document.getElementById('modal');
+const toastContainer=document.getElementById('toastContainer');
+
+const dropZone=document.getElementById('dropZone');
+dropZone.ondragover=e=>{e.preventDefault();dropZone.classList.add('dragover');};
+dropZone.ondragleave=()=>dropZone.classList.remove('dragover');
+dropZone.ondrop=e=>{
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  fileInput.files=e.dataTransfer.files;
+  readFile({target:{files:e.dataTransfer.files}});
+};
+
+fileInput.onchange=readFile;
+partInput.oninput=()=>{previewBtn.disabled=!(mappingConfirmed && partInput.value.trim());};
+document.getElementById('closeModal').onclick=closeMapping;
+document.getElementById('cancelMap').onclick=closeMapping;
+
+document.getElementById('confirmMap').onclick=e=>{
+ e.preventDefault();
+ headerMap={};
+ standardHeaders.forEach(h=>{
+   if(!hiddenMappingFields.includes(h)){
+     headerMap[h]=document.getElementById('map_'+h)?.value||null;
+   }
+ });
+mappingConfirmed=true;
+modal.style.display='none';
+showToast('Headers mapped successfully','success');
+};
+
+previewBtn.onclick=generatePreview;
+downloadBtn.onclick=downloadExcel;
+resetBtn.onclick=resetAll;
+
+function showToast(msg,type='success'){
+ const toast=document.createElement('div');
+ toast.className=`toast ${type}`;
+ toast.textContent=msg;
+ toastContainer.appendChild(toast);
+ setTimeout(()=>toast.remove(),3000);
+}
+
+function closeMapping(){mappingConfirmed=false; previewBtn.disabled=true; downloadBtn.disabled=true; modal.style.display='none';}
+
+function readFile(e){
+ const reader=new FileReader();
+ reader.onload=ev=>{
+   const wb=XLSX.read(ev.target.result,{type:'array'});
+   const sheet=wb.Sheets[wb.SheetNames[0]];
+   const rows=XLSX.utils.sheet_to_json(sheet,{header:1,defval:''});
+   fileHeaders=rows[1]||rows[0];
+   rawData=rows.slice(2).map(r=>{
+     const o={};
+     fileHeaders.forEach((h,i)=>o[h]=r[i]??'');
+     return o;
+   });
+   showMappingPopup();
+ };
+ reader.readAsArrayBuffer(e.target.files[0]);
+}
+
+function showMappingPopup(){
+ const form=document.getElementById('mapForm');
+ form.innerHTML='';
+ standardHeaders.forEach(h=>{
+   if(hiddenMappingFields.includes(h)) return;
+   const row=document.createElement('div');
+   row.className='map-row';
+   const label=document.createElement('label'); label.textContent=h;
+   const select=document.createElement('select'); select.id='map_'+h;
+   select.innerHTML='<option value="">-- Select Column --</option>';
+   fileHeaders.forEach(f=>{
+     const opt=document.createElement('option'); opt.value=f; opt.textContent=f; 
+     select.appendChild(opt);
+     if(f.toLowerCase()===h.toLowerCase()) select.value=f;
+   });
+   row.appendChild(label); row.appendChild(select); form.appendChild(row);
+ });
+ modal.style.display='block';
+}
+
+function generatePreview(){
+ if(!mappingConfirmed){showToast('Please map headers first','warning'); return;}
+ for(let rf of requiredFields){
+   if(!headerMap[rf] || headerMap[rf]===''){showToast(`Required field "${rf}" is missing`,'error'); return;}
+ }
+ outputData=[];
+ const partNo=partInput.value.trim();
+ rawData.forEach(row=>{
+   if(!row[headerMap['Description']]) return;
+   const r={};
+   standardHeaders.forEach(h=>{
+     if(h==='S.No') r[h]=outputData.length+1;
+     else if(h==='PART_NUMBER'||h==='Item_number') r[h]=partNo;
+     else if(h==='Ref'){
+       let v=row[headerMap[h]]?.toString().trim();
+       if(!v){r[h]='NA'; r['Qty/Board']=1;}
+       else{r[h]=v; r['Qty/Board']=v.split(/[\s,]+/).filter(Boolean).length;}
+     }
+     else if(h==='MFR'){
+       let mv=row[headerMap[h]]?.toString().trim();
+       r[h]=mv?mv:'-'; // ✅ Default '-' if blank
+     }
+     else if(hiddenMappingFields.includes(h)) r[h]='';
+     else r[h]=row[headerMap[h]]||'';
+   });
+   outputData.push(r);
+ });
+ renderTable();
+ downloadBtn.disabled=outputData.length===0;
+ showToast(`Preview generated. Total Rows: ${outputData.length}`,'success');
+}
+
+function renderTable(){
+ previewTable.innerHTML='<tr>'+standardHeaders.map(h=>`<th>${h}</th>`).join('')+'</tr>';
+ outputData.forEach(r=>{
+   previewTable.innerHTML+='<tr>'+standardHeaders.map(h=>`<td>${r[h]||''}</td>`).join('')+'</tr>';
+ });
+}
+
+function downloadExcel(){
+ if(!confirm("Excel file download karna hai?")) return;
+ const ws=XLSX.utils.json_to_sheet(outputData,{header:standardHeaders});
+ const wb=XLSX.utils.book_new();
+ XLSX.utils.book_append_sheet(wb,ws,'Output');
+ XLSX.writeFile(wb,'Satendra_'+partInput.value+'.xlsx');
+ showToast('Excel downloaded successfully','success');
+}
+
+function resetAll(){
+ if(!confirm("Reset karna hai? Saara data clear ho jayega.")) return;
+ fileInput.value=''; partInput.value=''; previewTable.innerHTML='';
+ rawData=[]; fileHeaders=[]; headerMap={}; outputData=[];
+ mappingConfirmed=false; previewBtn.disabled=true; downloadBtn.disabled=true; modal.style.display='none';
+ showToast('Reset successfully','success');
+}
+</script>
+</body>
+</html>
